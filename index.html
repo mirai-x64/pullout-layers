@@ -471,7 +471,9 @@ document.getElementById("again").addEventListener("click", newGame);
 function fit() {
   const dpr = Math.min(2, devicePixelRatio || 1);
   cv.width = W * dpr; cv.height = H * dpr;
-  cv.style.width = W + "px"; cv.style.height = H + "px";
+  // 盤は 618px ある。ノートPCの表示領域に収まらないと縦スクロールが要るので縮める。
+  const s = Math.min(1, (innerHeight - 32) / H);
+  cv.style.width = W * s + "px"; cv.style.height = H * s + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener("resize", fit);
