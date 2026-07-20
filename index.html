@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>引き抜き層 — pullout-layers</title>
+<style>
+  :root {
+    --bg: #0e1017;
+    --panel: #171a24;
+    --line: #262b3a;
+    --text: #d8dcea;
+    --dim: #7c849b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #wrap { display: flex; gap: 22px; align-items: flex-start; }
+  #stage { position: relative; }
+  canvas { display: block; border-radius: 10px; background: var(--panel); touch-action: manipulation; }
+  #side { width: 230px; padding-top: 4px; }
+  h1 { font-size: 17px; margin: 0 0 2px; letter-spacing: .04em; font-weight: 600; }
+  .sub { font-size: 11px; color: var(--dim); margin: 0 0 18px; letter-spacing: .06em; }
+  .rule { font-size: 12px; line-height: 1.75; color: var(--dim); margin: 0 0 16px; }
+  .rule b { color: var(--text); font-weight: 600; }
+  .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 5px 0; border-top: 1px solid var(--line); color: var(--dim); }
+  .stat span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
+  #over {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+    background: rgba(10,12,18,.86); border-radius: 10px; backdrop-filter: blur(2px);
+  }
+  #over.on { display: flex; }
+  #over h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .08em; }
+  #over p { margin: 0; font-size: 12px; color: var(--dim); }
+  button {
+    margin-top: 6px; padding: 9px 22px; font: inherit; font-size: 13px;
+    color: var(--text); background: #232838; border: 1px solid #39405a;
+    border-radius: 6px; cursor: pointer;
+  }
+  button:hover { background: #2c3247; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="over">
+      <h2>層が天井に達した</h2>
+      <p id="overinfo"></p>
+      <button id="again">もう一度 (R)</button>
+    </div>
+  </div>
+  <div id="side">
+    <h1>引き抜き層</h1>
+    <p class="sub">T²MLR / middle-layer recurrence</p>
+    <p class="rule">
+      落下中の層は<b>操作できない</b>。<br>
+      できるのは最下段 <b>h₀</b> を1つ引き抜くことだけ。<br>
+      引き抜くとその列が1段沈む。<br>
+      <b>結合は引き抜きでのみ起きる</b> — 同色が縦横3つ以上で消え、連鎖する。
+    </p>
+    <div class="stat"><span>経過</span><span id="s-time">0.0s</span></div>
+    <div class="stat"><span>落下間隔</span><span id="s-spawn">-</span></div>
+    <div class="stat"><span>消去</span><span id="s-clear">0</span></div>
+    <div class="stat"><span>最大連鎖</span><span id="s-chain">0</span></div>
+    <div class="stat"><span>操作</span><span style="font-size:11px">クリック / 1-8 / ←→+Space</span></div>
+  </div>
+</div>
+<script>
+"use strict";
+
+const COLS = 8, ROWS = 14;
+const CELL = 42, PAD = 8;
+const W = COLS * CELL + PAD * 2;
+const H = ROWS * CELL + PAD * 2 + 14;   // +14 : クールダウン帯
+
+const FALL_SPEED   = 9.5;   // 行/秒
+const PULL_CD      = 0.60;  // 秒
+const SPAWN_START  = 0.95;  // 秒
+const SPAWN_END    = 0.34;  // 秒
+const SPAWN_RAMP   = 70;    // 秒かけて END まで
+const FLASH_TIME   = 0.26;  // 発光時間
+const NCOLORS      = 4;
+
+const COLORS = [
+  { base: "#3fb9ae", lit: "#8ff0e6" },
+  { base: "#d1913a", lit: "#ffd894" },
+  { base: "#c05f95", lit: "#ffaad6" },
+  { base: "#6579d8", lit: "#b3c0ff" },
+];
+const SUB = "₀₁₂₃₄₅₆₇₈₉";
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const overEl = document.getElementById("over");
+const overInfo = document.getElementById("overinfo");
+
+let G;   // ゲーム状態
+
+function subscript(n) {
+  return String(n).split("").map(d => SUB[+d]).join("");
+}
+
+function newGame() {
+  G = {
+    grid: Array.from({ length: ROWS }, () => Array(COLS).fill(null)),
+    falling: [],          // {col, y, c}
+    state: "playing",     // playing | resolving | over
+    cd: 0,                // 引き抜きクールダウン残
+    spawnT: 0.45,         // 次の落下までの残り
+    t: 0,
+    cursor: 3,
+    cleared: 0,
+    maxChain: 0,
+    chain: 0,
+    chainShow: 0,
+    flashT: 0,
+    flashCells: [],
+    lastPull: -9,
+  };
+  overEl.classList.remove("on");
+}
+
+function spawnInterval() {
+  const k = Math.min(1, G.t / SPAWN_RAMP);
+  return SPAWN_START + (SPAWN_END - SPAWN_START) * k;
+}
+
+// 列の最上段の埋まっている行。空なら ROWS。
+function topFilled(col) {
+  for (let r = 0; r < ROWS; r++) if (G.grid[r][col]) return r;
+  return ROWS;
+}
+
+function colHeight(col) { return ROWS - topFilled(col); }
+
+function spawn() {
+  const busy = new Set(G.falling.map(f => f.col));
+  const avail = [];
+  for (let c = 0; c < COLS; c++) if (!busy.has(c) && topFilled(c) > 0) avail.push(c);
+  if (!avail.length) return;
+  const col = avail[(Math.random() * avail.length) | 0];
+  G.falling.push({ col, y: -1, c: (Math.random() * NCOLORS) | 0 });
+}
+
+function stepFalling(dt) {
+  for (let i = G.falling.length - 1; i >= 0; i--) {
+    const f = G.falling[i];
+    f.y += FALL_SPEED * dt;
+    const landRow = topFilled(f.col) - 1;
+    if (landRow < 0) { gameOver(); return; }
+    if (f.y >= landRow) {
+      G.grid[landRow][f.col] = { c: f.c, off: 0, flash: 0 };
+      G.falling.splice(i, 1);
+      if (landRow === 0) { gameOver(); return; }
+    }
+  }
+}
+
+// --- 引き抜き -------------------------------------------------------------
+function canPull(col) {
+  return G.state === "playing" && G.cd <= 0 && col >= 0 && col < COLS && !!G.grid[ROWS - 1][col];
+}
+
+function pull(col) {
+  if (!canPull(col)) return false;
+  // 最下段を抜き、その列だけ1段沈める
+  for (let r = ROWS - 1; r > 0; r--) {
+    const above = G.grid[r - 1][col];
+    G.grid[r][col] = above;
+    if (above) above.off -= 1;      // 上から降りてきた分の視覚オフセット
+  }
+  G.grid[0][col] = null;
+  G.cd = PULL_CD;
+  G.lastPull = G.t;
+  G.chain = 0;
+  resolve();
+  return true;
+}
+
+// --- 結合判定 -------------------------------------------------------------
+function findGroups() {
+  const seen = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+  const out = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    if (seen[r][c] || !G.grid[r][c]) continue;
+    const color = G.grid[r][c].c;
+    const stack = [[r, c]], group = [];
+    seen[r][c] = true;
+    while (stack.length) {
+      const [y, x] = stack.pop();
+      group.push([y, x]);
+      const nb = [[y - 1, x], [y + 1, x], [y, x - 1], [y, x + 1]];
+      for (const [ny, nx] of nb) {
+        if (ny < 0 || ny >= ROWS || nx < 0 || nx >= COLS) continue;
+        if (seen[ny][nx]) continue;
+        const cell = G.grid[ny][nx];
+        if (!cell || cell.c !== color) continue;
+        seen[ny][nx] = true;
+        stack.push([ny, nx]);
+      }
+    }
+    if (group.length >= 3) out.push(group);
+  }
+  return out;
+}
+
+function resolve() {
+  const groups = findGroups();
+  if (!groups.length) {
+    if (G.state !== "over") G.state = "playing";
+    return;
+  }
+  G.chain++;
+  G.maxChain = Math.max(G.maxChain, G.chain);
+  G.chainShow = 1.2;
+  G.state = "resolving";
+  G.flashT = FLASH_TIME;
+  G.flashCells = [];
+  for (const g of groups) for (const [r, c] of g) {
+    G.grid[r][c].flash = 1;
+    G.flashCells.push([r, c]);
+  }
+}
+
+function finishFlash() {
+  for (const [r, c] of G.flashCells) {
+    if (G.grid[r][c]) { G.grid[r][c] = null; G.cleared++; }
+  }
+  G.flashCells = [];
+  applyGravity();
+  resolve();          // 連鎖
+}
+
+function applyGravity() {
+  for (let c = 0; c < COLS; c++) {
+    let write = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      const cell = G.grid[r][c];
+      if (!cell) continue;
+      if (write !== r) {
+        cell.off -= (write - r);
+        G.grid[write][c] = cell;
+        G.grid[r][c] = null;
+      }
+      write--;
+    }
+  }
+}
+
+function gameOver() {
+  G.state = "over";
+  overInfo.textContent =
+    `${G.t.toFixed(1)}秒 / 消去 ${G.cleared} / 最大連鎖 ${G.maxChain}`;
+  overEl.classList.add("on");
+}
+
+// --- 更新 -----------------------------------------------------------------
+function update(dt) {
+  if (G.state === "over") return;
+  G.t += dt;
+  G.cd = Math.max(0, G.cd - dt);
+  G.chainShow = Math.max(0, G.chainShow - dt);
+
+  // 視覚オフセットの緩和（常時）
+  const k = Math.min(1, dt * 17);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const cell = G.grid[r][c];
+    if (cell && cell.off !== 0) {
+      cell.off += (0 - cell.off) * k;
+      if (Math.abs(cell.off) < 0.004) cell.off = 0;
+    }
+  }
+
+  if (G.state === "resolving") {
+    G.flashT -= dt;
+    if (G.flashT <= 0) finishFlash();
+    return;                       // 解決中は落下も出現も止める
+  }
+
+  stepFalling(dt);
+  if (G.state === "over") return;
+
+  G.spawnT -= dt;
+  if (G.spawnT <= 0) { spawn(); G.spawnT += spawnInterval(); }
+}
+
+// --- 描画 -----------------------------------------------------------------
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawCell(col, rowF, c, opts) {
+  const o = opts || {};
+  const x = PAD + col * CELL, y = PAD + rowF * CELL;
+  const m = 2.5, s = CELL - m * 2;
+  const pal = COLORS[c];
+
+  if (o.flash) {
+    ctx.save();
+    ctx.shadowColor = pal.lit;
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = pal.lit;
+    roundRect(x + m, y + m, s, s, 6); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = "rgba(255,255,255,.72)";
+    roundRect(x + m, y + m, s, s, 6); ctx.fill();
+    return;
+  }
+
+  ctx.globalAlpha = o.alpha == null ? 1 : o.alpha;
+  const grad = ctx.createLinearGradient(x, y, x, y + CELL);
+  grad.addColorStop(0, pal.lit);
+  grad.addColorStop(0.14, pal.base);
+  grad.addColorStop(1, pal.base);
+  ctx.fillStyle = grad;
+  roundRect(x + m, y + m, s, s, 6); ctx.fill();
+
+  if (o.dashed) {                     // 落下中 = 触れない印
+    ctx.strokeStyle = "rgba(255,255,255,.55)";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 3]);
+    roundRect(x + m + .6, y + m + .6, s - 1.2, s - 1.2, 6); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (o.label != null) {
+    ctx.fillStyle = "rgba(12,14,20,.42)";
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("h" + subscript(o.label), x + CELL / 2, y + CELL / 2 + .5);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 盤面
+  ctx.fillStyle = "#171a24";
+  roundRect(0, 0, W, H, 10); ctx.fill();
+
+  // グリッド線
+  ctx.strokeStyle = "#1f2330";
+  ctx.lineWidth = 1;
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath();
+    ctx.moveTo(PAD + c * CELL + .5, PAD);
+    ctx.lineTo(PAD + c * CELL + .5, PAD + ROWS * CELL);
+    ctx.stroke();
+  }
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath();
+    ctx.moveTo(PAD, PAD + r * CELL + .5);
+    ctx.lineTo(PAD + COLS * CELL, PAD + r * CELL + .5);
+    ctx.stroke();
+  }
+
+  // 天井の危険帯
+  ctx.fillStyle = "rgba(200,70,70,.10)";
+  ctx.fillRect(PAD, PAD, COLS * CELL, CELL);
+
+  // 最下段 = 引き抜ける層
+  ctx.fillStyle = "rgba(120,150,255,.07)";
+  ctx.fillRect(PAD, PAD + (ROWS - 1) * CELL, COLS * CELL, CELL);
+
+  // カーソル列
+  if (G.state !== "over") {
+    const ready = G.cd <= 0 && !!G.grid[ROWS - 1][G.cursor];
+    ctx.fillStyle = ready ? "rgba(150,180,255,.09)" : "rgba(150,180,255,.04)";
+    ctx.fillRect(PAD + G.cursor * CELL, PAD, CELL, ROWS * CELL);
+    ctx.strokeStyle = ready ? "rgba(170,200,255,.55)" : "rgba(170,200,255,.18)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(PAD + G.cursor * CELL + .75, PAD + (ROWS - 1) * CELL + .75, CELL - 1.5, CELL - 1.5);
+  }
+
+  // 積まれた層
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const cell = G.grid[r][c];
+    if (!cell) continue;
+    drawCell(c, r + cell.off, cell.c, {
+      label: ROWS - 1 - r,
+      flash: cell.flash && G.state === "resolving",
+    });
+  }
+
+  // 落下中の層
+  for (const f of G.falling) {
+    if (f.y < -0.9) continue;
+    drawCell(f.col, Math.max(-0.9, f.y), f.c, { dashed: true, alpha: .82 });
+  }
+
+  // クールダウン帯
+  const by = PAD + ROWS * CELL + 5;
+  ctx.fillStyle = "#232838";
+  roundRect(PAD, by, COLS * CELL, 5, 2.5); ctx.fill();
+  const p = 1 - G.cd / PULL_CD;
+  ctx.fillStyle = p >= 1 ? "#6d8cff" : "#3c4666";
+  roundRect(PAD, by, COLS * CELL * Math.min(1, p), 5, 2.5); ctx.fill();
+
+  // 連鎖表示
+  if (G.chainShow > 0 && G.chain >= 2) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, G.chainShow / .4);
+    ctx.fillStyle = "#e6ecff";
+    ctx.font = "600 26px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(G.chain + " 連鎖", W / 2, PAD + 3.2 * CELL);
+    ctx.restore();
+  }
+}
+
+// --- HUD ------------------------------------------------------------------
+const hud = {
+  time: document.getElementById("s-time"),
+  spawn: document.getElementById("s-spawn"),
+  clear: document.getElementById("s-clear"),
+  chain: document.getElementById("s-chain"),
+};
+function drawHud() {
+  hud.time.textContent = G.t.toFixed(1) + "s";
+  hud.spawn.textContent = spawnInterval().toFixed(2) + "s";
+  hud.clear.textContent = G.cleared;
+  hud.chain.textContent = G.maxChain;
+}
+
+// --- 入力 -----------------------------------------------------------------
+cv.addEventListener("pointerdown", e => {
+  if (G.state === "over") return;
+  const rect = cv.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (W / rect.width) - PAD;
+  const col = Math.floor(x / CELL);
+  if (col < 0 || col >= COLS) return;
+  G.cursor = col;
+  pull(col);
+});
+
+addEventListener("keydown", e => {
+  if (e.key === "r" || e.key === "R") { newGame(); return; }
+  if (G.state === "over") return;
+  if (e.key >= "1" && e.key <= "8") { const c = +e.key - 1; G.cursor = c; pull(c); e.preventDefault(); return; }
+  if (e.key === "ArrowLeft")  { G.cursor = (G.cursor + COLS - 1) % COLS; e.preventDefault(); return; }
+  if (e.key === "ArrowRight") { G.cursor = (G.cursor + 1) % COLS; e.preventDefault(); return; }
+  if (e.key === " " || e.key === "Enter") { pull(G.cursor); e.preventDefault(); return; }
+});
+
+document.getElementById("again").addEventListener("click", newGame);
+
+// --- ループ ---------------------------------------------------------------
+function fit() {
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.width = W + "px"; cv.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", fit);
+
+let last = 0;
+function frame(now) {
+  if (!last) last = now;
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  drawHud();
+  requestAnimationFrame(frame);
+}
+
+fit();
+newGame();
+requestAnimationFrame(frame);
+
+// --- 検証用フック（ゲーム本体は使わない） ---------------------------------
+window.__game = {
+  get state() { return G.state; },
+  get t() { return G.t; },
+  get cleared() { return G.cleared; },
+  get maxChain() { return G.maxChain; },
+  get cd() { return G.cd; },
+  heights() { return Array.from({ length: COLS }, (_, c) => colHeight(c)); },
+  grid() { return G.grid.map(row => row.map(x => x ? x.c : -1)); },
+  canPull, pull, newGame,
+  spawnInterval,
+  COLS, ROWS, PULL_CD,
+};
+</script>
+</body>
+</html>
