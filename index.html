@@ -80,19 +80,23 @@ const CELL = 42, PAD = 8;
 const W = COLS * CELL + PAD * 2;
 const H = ROWS * CELL + PAD * 2 + 14;   // +14 : クールダウン帯
 
+// 数値は tools/balance.mjs の掃引で決めた。反応遅れつきの自動操縦3種の生存秒は
+// 無作為 53s / 人間相当 140s / 全列読み 190s。全列読みでも 4/8 は天井に達する。
 let FALL_SPEED   = 9.5;   // 行/秒
 let PULL_CD      = 0.60;  // 秒
-let SPAWN_START  = 0.95;  // 秒
-let SPAWN_END    = 0.34;  // 秒
-let SPAWN_RAMP   = 70;    // 秒かけて END まで
+let SPAWN_START  = 0.70;  // 秒
+let SPAWN_END    = 0.24;  // 秒
+let SPAWN_RAMP   = 30;    // 秒かけて END まで。長いと最初の1分が無風になる
 let FLASH_TIME   = 0.26;  // 発光時間
-let NCOLORS      = 4;
+let NCOLORS      = 6;     // 4色だと最下段の横3つが偶然できすぎて山が育たない
 
 const COLORS = [
   { base: "#3fb9ae", lit: "#8ff0e6" },
   { base: "#d1913a", lit: "#ffd894" },
   { base: "#c05f95", lit: "#ffaad6" },
   { base: "#6579d8", lit: "#b3c0ff" },
+  { base: "#7fae42", lit: "#c8f08a" },
+  { base: "#b45b4a", lit: "#ff9f8a" },
 ];
 const SUB = "₀₁₂₃₄₅₆₇₈₉";
 
@@ -123,6 +127,8 @@ function newGame() {
     flashT: 0,
     flashCells: [],
     lastPull: -9,
+    spawned: 0,
+    spawnTries: 0,
   };
   overEl.classList.remove("on");
 }
@@ -144,7 +150,9 @@ function spawn() {
   const busy = new Set(G.falling.map(f => f.col));
   const avail = [];
   for (let c = 0; c < COLS; c++) if (!busy.has(c) && topFilled(c) > 0) avail.push(c);
+  G.spawnTries++;
   if (!avail.length) return;
+  G.spawned++;
   const col = avail[(Math.random() * avail.length) | 0];
   G.falling.push({ col, y: -1, c: (Math.random() * NCOLORS) | 0 });
 }
@@ -489,6 +497,8 @@ window.__game = {
   get t() { return G.t; },
   get cleared() { return G.cleared; },
   get maxChain() { return G.maxChain; },
+  get spawned() { return G.spawned; },
+  get spawnTries() { return G.spawnTries; },
   get cd() { return G.cd; },
   heights() { return Array.from({ length: COLS }, (_, c) => colHeight(c)); },
   grid() { return G.grid.map(row => row.map(x => x ? x.c : -1)); },
@@ -505,6 +515,7 @@ window.__game = {
     if (p.SPAWN_END   != null) SPAWN_END   = p.SPAWN_END;
     if (p.SPAWN_RAMP  != null) SPAWN_RAMP  = p.SPAWN_RAMP;
     if (p.NCOLORS     != null) NCOLORS     = p.NCOLORS;
+    if (p.FLASH_TIME  != null) FLASH_TIME   = p.FLASH_TIME;
   },
 };
 </script>
