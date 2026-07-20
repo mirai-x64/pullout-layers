@@ -80,13 +80,13 @@ const CELL = 42, PAD = 8;
 const W = COLS * CELL + PAD * 2;
 const H = ROWS * CELL + PAD * 2 + 14;   // +14 : クールダウン帯
 
-const FALL_SPEED   = 9.5;   // 行/秒
-const PULL_CD      = 0.60;  // 秒
-const SPAWN_START  = 0.95;  // 秒
-const SPAWN_END    = 0.34;  // 秒
-const SPAWN_RAMP   = 70;    // 秒かけて END まで
-const FLASH_TIME   = 0.26;  // 発光時間
-const NCOLORS      = 4;
+let FALL_SPEED   = 9.5;   // 行/秒
+let PULL_CD      = 0.60;  // 秒
+let SPAWN_START  = 0.95;  // 秒
+let SPAWN_END    = 0.34;  // 秒
+let SPAWN_RAMP   = 70;    // 秒かけて END まで
+let FLASH_TIME   = 0.26;  // 発光時間
+let NCOLORS      = 4;
 
 const COLORS = [
   { base: "#3fb9ae", lit: "#8ff0e6" },
@@ -492,9 +492,20 @@ window.__game = {
   get cd() { return G.cd; },
   heights() { return Array.from({ length: COLS }, (_, c) => colHeight(c)); },
   grid() { return G.grid.map(row => row.map(x => x ? x.c : -1)); },
+  get PULL_CD() { return PULL_CD; },
   canPull, pull, newGame,
   spawnInterval,
-  COLS, ROWS, PULL_CD,
+  COLS, ROWS,
+  // 実時間を待たずに進めるための検証フック
+  step(dt) { update(dt); },
+  setParams(p) {
+    if (p.FALL_SPEED  != null) FALL_SPEED  = p.FALL_SPEED;
+    if (p.PULL_CD     != null) PULL_CD     = p.PULL_CD;
+    if (p.SPAWN_START != null) SPAWN_START = p.SPAWN_START;
+    if (p.SPAWN_END   != null) SPAWN_END   = p.SPAWN_END;
+    if (p.SPAWN_RAMP  != null) SPAWN_RAMP  = p.SPAWN_RAMP;
+    if (p.NCOLORS     != null) NCOLORS     = p.NCOLORS;
+  },
 };
 </script>
 </body>
